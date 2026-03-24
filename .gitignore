@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+users.db
+energy_data.db
+.env
