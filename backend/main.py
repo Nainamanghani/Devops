@@ -122,7 +122,7 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
     
     # Return token
-    access_token = create_access_token(data={"sub": db_user.username})
+    access_token = create_access_token(payload={"sub": db_user.username})
     return Token(access_token=access_token, token_type="bearer")
 
 @app.post("/token", response_model=Token)
@@ -131,7 +131,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    access_token = create_access_token(data={"sub": user.username})
+    access_token = create_access_token(payload={"sub": user.username})
     return Token(access_token=access_token, token_type="bearer")
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
