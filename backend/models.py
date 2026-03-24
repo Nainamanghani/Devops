@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 
 
@@ -24,8 +24,8 @@ class ResearchResponse(BaseModel):
     file_path: Optional[str] = None
     suggestions: List[str] = Field(default_factory=list)
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "query": "Future of solar energy in India",
                 "result": "Solar capacity is expected to grow significantly...",
@@ -37,3 +37,4 @@ class ResearchResponse(BaseModel):
                 ]
             }
         }
+    )
