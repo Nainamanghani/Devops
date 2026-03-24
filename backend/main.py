@@ -48,32 +48,31 @@ def fetch_from_cache(topic: str, db: Session):
 
 def store_in_cache(topic: str, report: str, db: Session):
     slug = normalize_topic(topic)
-
     if not db.query(KnowledgeBase).filter(KnowledgeBase.slug == slug).first():
-        record = KnowledgeBase(
-            query=topic,
-            slug=slug,
-            content=report
-        )
+        record = KnowledgeBase(query=topic, slug=slug, content=report)
         db.add(record)
         db.commit()
+
+
+def save_to_history(topic: str, report: str, db: Session):
+    """Save research result to ChatHistory for /history endpoint."""
+    entry = ChatHistory(query=topic, response=report)
+    db.add(entry)
+    db.commit()
 
 
 def archive_report(topic: str, report: str) -> Optional[str]:
     try:
         directory = os.path.join(os.path.dirname(__file__), "knowledge_base")
         os.makedirs(directory, exist_ok=True)
-
         filename = f"{normalize_topic(topic)}.txt"
         full_path = os.path.join(directory, filename)
-
         with open(full_path, "w", encoding="utf-8") as file:
             file.write(
                 f"Topic: {topic}\n"
                 f"Generated At: {datetime.utcnow()}\n\n"
                 f"{report}"
             )
-
         return full_path
     except Exception:
         return None
@@ -88,29 +87,33 @@ from pydantic import BaseModel
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
+
 class UserCreate(BaseModel):
     username: str
     email: str
     password: str
 
+
 class UserResponse(BaseModel):
     username: str
     email: str
 
+
+# FIX 1: Added username field so test_signup assertion works
 class Token(BaseModel):
     access_token: str
     token_type: str
+    username: str
+
 
 @app.post("/signup", response_model=Token)
 async def signup(user: UserCreate, db: Session = Depends(get_db)):
-    # Check if user exists
     existing = db.query(User).filter(
         (User.username == user.username) | (User.email == user.email)
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
-    
-    # Create user
+
     hashed_password = get_password_hash(user.password)
     db_user = User(
         username=user.username,
@@ -120,19 +123,21 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    
-    # Return token
+
     access_token = create_access_token(payload={"sub": db_user.username})
-    return Token(access_token=access_token, token_type="bearer")
+    # FIX 1: return username in response
+    return Token(access_token=access_token, token_type="bearer", username=db_user.username)
+
 
 @app.post("/token", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     access_token = create_access_token(payload={"sub": user.username})
-    return Token(access_token=access_token, token_type="bearer")
+    return Token(access_token=access_token, token_type="bearer", username=user.username)
+
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     from .auth import decode_access_token
@@ -145,7 +150,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-@app.get("/users/me", response_model=UserResponse)
+
+# FIX 2: was "/users/me", test calls "/me"
+@app.get("/me", response_model=UserResponse)
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return UserResponse(username=current_user.username, email=current_user.email)
 
@@ -161,10 +168,11 @@ async def research_controller(
     db: Session = Depends(get_db)
 ):
     try:
-        # 1️⃣ Check cache
         cached_entry = fetch_from_cache(payload.query, db)
 
         if cached_entry:
+            # FIX 5: also save cache hits to history so /history is never empty
+            save_to_history(payload.query, cached_entry.content, db)
             return ResearchResponse(
                 query=payload.query,
                 result=cached_entry.content,
@@ -172,20 +180,16 @@ async def research_controller(
                 suggestions=[]
             )
 
-        # 2️⃣ Run AI research pipeline
-        engine_output = run_full_research(
-            payload.query,
-            payload.thread_id
-        )
+        engine_output = run_full_research(payload.query, payload.thread_id)
 
         report_text = engine_output.get("report")
         followups = engine_output.get("suggestions", [])
 
-        # 3️⃣ Store results
         store_in_cache(payload.query, report_text, db)
+        # FIX 5: save to ChatHistory so /history endpoint returns results
+        save_to_history(payload.query, report_text, db)
         file_location = archive_report(payload.query, report_text)
 
-        # 4️⃣ Return structured response
         return ResearchResponse(
             query=payload.query,
             result=report_text,
@@ -201,14 +205,15 @@ async def research_controller(
 
 
 # =====================================
-# 📜 Optional History Endpoint
+# 📜 History Endpoint
 # =====================================
 
 @app.get("/history", response_model=List[ResearchResponse])
 async def recent_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # FIX 3: was ChatHistory.timestamp — column is actually created_at
     logs = (
         db.query(ChatHistory)
-        .order_by(ChatHistory.timestamp.desc())
+        .order_by(ChatHistory.created_at.desc())
         .limit(5)
         .all()
     )
@@ -222,9 +227,3 @@ async def recent_history(current_user: User = Depends(get_current_user), db: Ses
         )
         for entry in logs
     ]
-
-
-# =====================================
-# 🚀 Local Dev Entry
-# =====================================
-
